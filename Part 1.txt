@@ -1,0 +1,133 @@
+Part 1: Code Review & Debugging (30 minutes)
+A previous intern wrote this API endpoint for adding new products. Something is wrong -
+the code compiles but doesn't work as expected in production.
+@app.route('/api/products', methods=['POST'])
+def create_product():
+data = request.json
+# Create new product
+product = Product(
+name=data['name'],
+sku=data['sku'],
+price=data['price'],
+warehouse_id=data['warehouse_id']
+)
+db.session.add(product)
+db.session.commit()
+# Update inventory count
+inventory = Inventory(
+product_id=product.id,
+warehouse_id=data['warehouse_id'],
+quantity=data['initial_quantity']
+)
+db.session.add(inventory)
+db.session.commit()
+return {"message": "Product created", "product_id": product.id}
+
+Your Tasks:
+1. Identify Issues: List all problems you see with this code (technical and business
+logic)
+2. Explain Impact: For each issue, explain what could go wrong in production
+3. Provide Fixes: Write the corrected version with explanations
+Additional Context (you may need to ask for more):
+● Products can exist in multiple warehouses
+● SKUs must be unique across the platform
+● Price can be decimal values
+● Some fields might be optional
+
+
+===========>
+
+
+Part 1: Identify Issues
+🔧 1. No Validation or Error Handling
+No check for required fields (name, sku, price, etc.)
+
+No validation for price being a number or sku uniqueness
+
+No handling of missing or malformed JSON
+
+No try-except block for database commits
+
+🔧 2. SKU Uniqueness Not Enforced
+The code blindly inserts a product without checking if a sku already exists
+
+🔧 3. Incorrect Handling of Multiple Warehouses
+Inventory is assumed to be inserted only for a single warehouse
+
+Business rule: Products can be in multiple warehouses — this is not reflected
+
+🔧 4. Decimal Precision for Price
+price=data['price'] assumes raw float which might cause precision loss
+
+Should use Decimal for currency handling
+
+🔧 5. No Input Sanitization
+Directly accessing data['field'] can throw KeyError
+
+🔧 6. No Return Status Code
+Always returns 200 even on failure. Should return 201 on success, and 400/500 otherwise
+
+❗Part 2: Explain Impact
+Issue	Impact in Production
+No validation	App crashes with KeyError or TypeError on malformed/missing input
+SKU not unique	Allows duplicate products with same SKU, breaking search, inventory, and sales
+No transaction rollback	Partial commit possible — product gets added, inventory fails
+Float price	Precision loss for currencies (e.g., 0.1 + 0.2 != 0.3)
+No error codes	Makes it hard for front-end or monitoring systems to know what failed
+No warehouse logic	Incorrect inventory model if a product must exist in multiple warehouses
+
+✅ Part 3: Corrected Version
+
+@app.route('/api/products', methods=['POST'])
+def create_product():
+    data = request.get_json()
+
+    # Validate required fields
+    required_fields = ['name', 'sku', 'price', 'warehouse_id', 'initial_quantity']
+    missing_fields = [field for field in required_fields if field not in data]
+    if missing_fields:
+        return jsonify({"error": f"Missing fields: {', '.join(missing_fields)}"}), 400
+
+    # Check for existing SKU
+    if Product.query.filter_by(sku=data['sku']).first():
+        return jsonify({"error": "SKU already exists"}), 400
+
+    try:
+        # Convert price to Decimal for accuracy
+        price = Decimal(str(data['price']))
+    except (InvalidOperation, TypeError):
+        return jsonify({"error": "Invalid price format"}), 400
+
+    try:
+        product = Product(
+            name=data['name'],
+            sku=data['sku'],
+            price=price
+        )
+        db.session.add(product)
+        db.session.flush()  # Get product.id before commit
+
+        # Inventory association to one warehouse
+        inventory = Inventory(
+            product_id=product.id,
+            warehouse_id=data['warehouse_id'],
+            quantity=data['initial_quantity']
+        )
+        db.session.add(inventory)
+        db.session.commit()
+
+    except IntegrityError as e:
+        db.session.rollback()
+        return jsonify({"error": "Database error", "details": str(e)}), 500
+
+    return jsonify({"message": "Product created", "product_id": product.id}), 201
+
+
+✨Improvements & Justifications
+Fix	Why It Matters
+Field validation	Prevents 400 errors and unclear exceptions
+SKU uniqueness check	Ensures business integrity
+Decimal for price	Accurate financial calculations
+db.session.flush()	Gets product.id safely before committing
+Error handling	Prevents half-saved states and helps with debugging
+Status codes	Proper API behavior and clarity for clients

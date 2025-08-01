@@ -1,0 +1,183 @@
+Part 3: API Implementation (35 minutes)
+Implement an endpoint that returns low-stock alerts for a company.
+Business Rules (discovered through previous questions):
+● Low stock threshold varies by product type
+
+● Only alert for products with recent sales activity
+● Must handle multiple warehouses per company
+● Include supplier information for reordering
+Endpoint Specification:
+GET /api/companies/{company_id}/alerts/low-stock
+
+Expected Response Format:
+{
+"alerts": [
+{
+"product_id": 123,
+"product_name": "Widget A",
+"sku": "WID-001",
+"warehouse_id": 456,
+"warehouse_name": "Main Warehouse",
+"current_stock": 5,
+"threshold": 20,
+"days_until_stockout": 12,
+"supplier": {
+"id": 789,
+"name": "Supplier Corp",
+"contact_email": "orders@supplier.com"
+}
+}
+],
+"total_alerts": 1
+}
+
+Your Tasks:
+1. Write Implementation: Use any language/framework (Python/Flask,
+Node.js/Express, etc.)
+2. Handle Edge Cases: Consider what could go wrong
+3. Explain Approach: Add comments explaining your logic
+Hints: You'll need to make assumptions about the database schema and business logic.
+Document these assumptions.
+
+
+======================>
+
+
+
+Assumptions & Setup
+Assumptions from schema and logic:
+
+Products have a low_stock_threshold field.
+
+Recent sales activity is tracked in a sales table.
+
+Sales have a created_at timestamp and quantity.
+
+Products can be supplied by multiple suppliers — we choose the first one for alert display.
+
+Each inventory row is for one (product_id, warehouse_id).
+
+✅ Database Schema (assumed or extended)
+sql
+Copy
+Edit
+ALTER TABLE products ADD COLUMN low_stock_threshold INT DEFAULT 10;
+
+CREATE TABLE sales (
+    id SERIAL PRIMARY KEY,
+    product_id INT REFERENCES products(id),
+    warehouse_id INT REFERENCES warehouses(id),
+    quantity INT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+✅ Implementation: Flask Endpoint
+python
+Copy
+Edit
+from flask import Flask, jsonify
+from models import db, Product, Warehouse, Inventory, Supplier, SupplierProduct, Sales
+from datetime import datetime, timedelta
+from sqlalchemy import func
+
+app = Flask(__name__)
+
+@app.route('/api/companies/<int:company_id>/alerts/low-stock', methods=['GET'])
+def low_stock_alerts(company_id):
+    # Consider recent activity within the past 30 days
+    recent_days = 30
+    cutoff_date = datetime.utcnow() - timedelta(days=recent_days)
+
+    # Subquery: products with recent sales
+    recent_sales_subq = (
+        db.session.query(Sales.product_id)
+        .filter(Sales.created_at >= cutoff_date)
+        .distinct()
+        .subquery()
+    )
+
+    # Main query: Get inventory data below threshold with recent sales
+    results = (
+        db.session.query(
+            Product.id.label("product_id"),
+            Product.name.label("product_name"),
+            Product.sku,
+            Product.low_stock_threshold.label("threshold"),
+            Warehouse.id.label("warehouse_id"),
+            Warehouse.name.label("warehouse_name"),
+            Inventory.quantity.label("current_stock"),
+            Supplier.id.label("supplier_id"),
+            Supplier.name.label("supplier_name"),
+            Supplier.contact_info.label("supplier_email"),
+            func.avg(Sales.quantity).label("avg_daily_sales")
+        )
+        .join(Inventory, Inventory.product_id == Product.id)
+        .join(Warehouse, Inventory.warehouse_id == Warehouse.id)
+        .join(Sales, (Sales.product_id == Product.id) & (Sales.warehouse_id == Warehouse.id))
+        .join(SupplierProduct, SupplierProduct.product_id == Product.id)
+        .join(Supplier, Supplier.id == SupplierProduct.supplier_id)
+        .filter(
+            Warehouse.company_id == company_id,
+            Product.id.in_(recent_sales_subq),
+            Inventory.quantity < Product.low_stock_threshold
+        )
+        .group_by(
+            Product.id, Product.name, Product.sku, Product.low_stock_threshold,
+            Warehouse.id, Warehouse.name, Inventory.quantity,
+            Supplier.id, Supplier.name, Supplier.contact_info
+        )
+        .all()
+    )
+
+    # Format results
+    alerts = []
+    for row in results:
+        avg_sales_per_day = row.avg_daily_sales or 1  # Prevent division by zero
+        days_until_stockout = int(row.current_stock / avg_sales_per_day)
+
+        alerts.append({
+            "product_id": row.product_id,
+            "product_name": row.product_name,
+            "sku": row.sku,
+            "warehouse_id": row.warehouse_id,
+            "warehouse_name": row.warehouse_name,
+            "current_stock": row.current_stock,
+            "threshold": row.threshold,
+            "days_until_stockout": days_until_stockout,
+            "supplier": {
+                "id": row.supplier_id,
+                "name": row.supplier_name,
+                "contact_email": row.supplier_email
+            }
+        })
+
+    return jsonify({
+        "alerts": alerts,
+        "total_alerts": len(alerts)
+    })
+⚠️ Edge Case Handling
+Edge Case	Handling
+No sales in 30 days	Excluded from alerts (recent_sales_subq)
+Multiple suppliers	Returns the first one found
+No threshold defined	Uses default from DB column (e.g. 10)
+Division by zero (no avg sales)	Fallback: avg_sales_per_day = 1
+Products with zero quantity	Still included if recent sales occurred
+
+🧠 Explanation of Logic
+Recent Sales Filter: Limits products to those sold in the past 30 days.
+
+Low Stock Filter: Includes only items below their defined low_stock_threshold.
+
+Joins:
+
+Products → Inventory → Warehouses
+
+Products → Suppliers
+
+Products → Sales (for recent activity and avg daily sales)
+
+Group & Aggregate:
+
+Use AVG(sales.quantity) to estimate days_until_stockout.
+
+Response Format: Structured exactly as requested.
+

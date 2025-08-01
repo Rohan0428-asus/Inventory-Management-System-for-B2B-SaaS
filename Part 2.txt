@@ -1,0 +1,110 @@
+Part 2: Database Design (25 minutes)
+Based on the requirements below, design a database schema. Note: These requirements
+are intentionally incomplete - you should identify what's missing.
+Given Requirements:
+● Companies can have multiple warehouses
+● Products can be stored in multiple warehouses with different quantities
+● Track when inventory levels change
+● Suppliers provide products to companies
+● Some products might be "bundles" containing other products
+Your Tasks:
+1. Design Schema: Create tables with columns, data types, and relationships
+2. Identify Gaps: List questions you'd ask the product team about missing
+requirements
+3. Explain Decisions: Justify your design choices (indexes, constraints, etc.)
+Format: Use any notation (SQL DDL, ERD, text description, etc.)
+
+==============>
+
+
+1. Design Schema
+I'll use SQL DDL-style notation for clarity, with comments to explain constraints and relationships.
+
+🔹 companies
+
+CREATE TABLE companies (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+🔹 warehouses
+
+CREATE TABLE warehouses (
+    id SERIAL PRIMARY KEY,
+    company_id INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    name VARCHAR(255) NOT NULL,
+    location VARCHAR(255),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+🔹 products
+
+CREATE TABLE products (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    sku VARCHAR(100) UNIQUE NOT NULL,
+    price DECIMAL(10, 2),
+    is_bundle BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+🔹 product_bundles (many-to-many: bundles → individual products)
+
+CREATE TABLE product_bundles (
+    bundle_id INT REFERENCES products(id) ON DELETE CASCADE,
+    product_id INT REFERENCES products(id) ON DELETE CASCADE,
+    quantity INT CHECK (quantity > 0),
+    PRIMARY KEY (bundle_id, product_id)
+);
+🔹 inventory (product in warehouse with quantity)
+
+CREATE TABLE inventory (
+    product_id INT REFERENCES products(id) ON DELETE CASCADE,
+    warehouse_id INT REFERENCES warehouses(id) ON DELETE CASCADE,
+    quantity INT DEFAULT 0 CHECK (quantity >= 0),
+    PRIMARY KEY (product_id, warehouse_id)
+);
+🔹 inventory_logs (tracks inventory changes)
+
+CREATE TABLE inventory_logs (
+    id SERIAL PRIMARY KEY,
+    product_id INT REFERENCES products(id),
+    warehouse_id INT REFERENCES warehouses(id),
+    quantity_before INT,
+    quantity_after INT,
+    change_reason VARCHAR(255),
+    changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+🔹 suppliers
+CREATE TABLE suppliers (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    contact_info TEXT
+);
+🔹 supplier_products (many-to-many: suppliers ↔ products)
+CREATE TABLE supplier_products (
+    supplier_id INT REFERENCES suppliers(id) ON DELETE CASCADE,
+    product_id INT REFERENCES products(id) ON DELETE CASCADE,
+    PRIMARY KEY (supplier_id, product_id)
+);
+
+ 2. Identify Gaps / Questions for Product Team
+Missing Detail	Question
+Who initiates inventory changes?	Should we track the user or system that triggered inventory_logs?
+Bundles	Are bundle quantities calculated automatically from child products?
+Supplier–Company link	Can suppliers be tied to specific companies or are they global?
+Inventory value	Do we need to track cost price (from supplier) vs. sale price?
+Expiry	Do some products need expiry dates or batch tracking?
+Inventory log granularity	Should we include delta quantity or just before/after?
+Soft deletes	Should records like products, warehouses be soft-deleted (with is_active) instead of hard-deleted?
+Units	Are all quantities assumed to be unit-based or is unit-of-measure (UOM) needed?
+SKU scope	Should SKU be unique platform-wide, per company, or per warehouse?
+
+ 3. Design Justifications
+Design Choice	Justification
+Foreign keys + ON DELETE CASCADE	Enforces relational integrity and auto-deletes orphaned records
+inventory as a separate table	Supports many-to-many (products in multiple warehouses) with quantity tracking
+inventory_logs	Ensures complete audit trail of stock movements
+product_bundles	Models product compositions (e.g. bundle of 2 pens + 1 notebook)
+Composite PKs (product_id, warehouse_id)	Prevents duplicate inventory entries per product-warehouse
+SKU UNIQUE constraint	Ensures integrity in product search and operations
+Decimal for price	Prevents floating-point inaccuracies in pricing
+supplier_products join table	Flexible model for multiple suppliers per product and vice versa
